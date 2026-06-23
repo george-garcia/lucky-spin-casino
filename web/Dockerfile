@@ -1,5 +1,5 @@
 # Casino frontend (Vite). Build context = mock-gambling-site (npm workspaces root).
-FROM node:20-alpine AS build
+FROM node:22-alpine AS build
 WORKDIR /app
 # The web workspace pulls @mockbank/connect from GitHub (its prepare script builds it).
 RUN apk add --no-cache git
