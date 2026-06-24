@@ -10,6 +10,8 @@ RUN npm install --workspace web
 COPY web ./web
 ARG VITE_API_URL=http://localhost:4100
 ENV VITE_API_URL=$VITE_API_URL
+ARG VITE_DEMO_PASSWORD=
+ENV VITE_DEMO_PASSWORD=$VITE_DEMO_PASSWORD
 WORKDIR /app/web
 RUN npm run build
 

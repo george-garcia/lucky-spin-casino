@@ -22,6 +22,23 @@ export function AuthPage({ onAuthed }: { onAuthed: (u: User) => void }) {
     }
   }
 
+  // One-click sign-in as the pre-seeded recruiter demo player.
+  async function signInAsDemo() {
+    setBusy(true);
+    setError('');
+    try {
+      const r = await api.login({
+        email: 'recruiter@demo.com',
+        password: (import.meta as any).env?.VITE_DEMO_PASSWORD || '',
+      });
+      onAuthed(r.user);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="min-h-screen flex items-center justify-center p-4">
       <div className="panel w-full max-w-md p-8">
@@ -50,6 +67,15 @@ export function AuthPage({ onAuthed }: { onAuthed: (u: User) => void }) {
             {busy ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Create account'}
           </button>
         </form>
+
+        <button
+          type="button"
+          onClick={signInAsDemo}
+          disabled={busy}
+          className="mt-3 w-full rounded-xl border border-gold/30 bg-gold/5 py-2.5 text-sm font-medium text-gold transition-colors hover:bg-gold/10 disabled:opacity-60"
+        >
+          Try a demo account →
+        </button>
 
         <p className="text-white/30 text-xs text-center mt-6">
           A separate company from Mock Bank. Fund your wallet with a bank card or by linking your account.
