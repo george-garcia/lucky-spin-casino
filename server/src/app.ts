@@ -1,13 +1,16 @@
 import express, { NextFunction, Request, Response } from 'express';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { randomBytes } from 'crypto';
+import { createHash } from 'crypto';
 import { z } from 'zod';
 import { config } from './config';
 import { bank, BankError } from './bank';
 import { play, payout, isValidPick, Game } from './games';
+import { seedDemoUser, DEMO_EMAIL } from './seed-demo';
 import {
   createUser, getUserByEmail, getUserById, getBalance, adjustWallet, listLedger,
   upsertBankLink, getBankLink, recordCardCharge, getLatestCardCharge,
@@ -24,8 +27,17 @@ function setSession(res: Response, userId: number) {
   res.cookie(config.cookieName, token, {
     httpOnly: true,
     sameSite: 'lax',
+    secure: process.env.NODE_ENV === 'production', // HTTPS-only cookie in prod
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
+}
+
+/**
+ * Deterministic idempotency key so a retried request (e.g. a timed-out response) is deduped by the
+ * bank instead of moving money twice. Coarse 30s window keys on the action + amount.
+ */
+function idemKey(...parts: (string | number)[]): string {
+  return createHash('sha256').update([...parts, Math.floor(Date.now() / 30000)].join(':')).digest('hex');
 }
 
 function requireAuth(req: AuthedRequest, res: Response, next: NextFunction) {
@@ -55,14 +67,21 @@ const DECLINE_MESSAGES: Record<string, string> = {
 
 export function createApp() {
   const app = express();
-  app.use(cors({ origin: config.frontendUrl, credentials: true }));
+  app.use(helmet());
+  // Exact-origin allowlist (supports a comma-separated FRONTEND_URL for multiple domains).
+  const allowedOrigins = config.frontendUrl.split(',').map((s) => s.trim()).filter(Boolean);
+  app.use(cors({ origin: allowedOrigins, credentials: true }));
   app.use(express.json());
   app.use(cookieParser());
+
+  // Rate limits: tight on auth (brute-force) and money/game actions (spam).
+  const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many attempts. Please wait a bit.' } });
+  const actionLimiter = rateLimit({ windowMs: 10 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false, message: { error: 'You are going too fast — slow down a moment.' } });
 
   // ── Auth ───────────────────────────────────────────────────────────────────
   const credsSchema = z.object({ email: z.string().email(), password: z.string().min(6), displayName: z.string().optional() });
 
-  app.post('/api/auth/register', asyncHandler(async (req, res) => {
+  app.post('/api/auth/register', authLimiter, asyncHandler(async (req, res) => {
     const { email, password, displayName } = credsSchema.parse(req.body);
     if (getUserByEmail(email)) return res.status(409).json({ error: 'Email already registered' });
     const user = createUser(email, await bcrypt.hash(password, 10), displayName ?? email.split('@')[0]);
@@ -70,12 +89,24 @@ export function createApp() {
     res.json({ user: userView(user) });
   }));
 
-  app.post('/api/auth/login', asyncHandler(async (req, res) => {
+  app.post('/api/auth/login', authLimiter, asyncHandler(async (req, res) => {
     const { email, password } = credsSchema.parse(req.body);
     const user = getUserByEmail(email);
     if (!user || !(await bcrypt.compare(password, user.password_hash))) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
+    setSession(res, user.id);
+    res.json({ user: userView(user) });
+  }));
+
+  // Passwordless one-click sign-in as the pre-seeded demo player (self-healing; no baked password).
+  app.post('/api/auth/demo-login', authLimiter, asyncHandler(async (_req, res) => {
+    let user = getUserByEmail(DEMO_EMAIL);
+    if (!user) {
+      await seedDemoUser();
+      user = getUserByEmail(DEMO_EMAIL);
+    }
+    if (!user) return res.status(500).json({ error: 'Demo account is not available right now.' });
     setSession(res, user.id);
     res.json({ user: userView(user) });
   }));
@@ -104,7 +135,7 @@ export function createApp() {
     amountCents: z.number().int().min(100),
   });
 
-  app.post('/api/fund/card', requireAuth, asyncHandler(async (req, res) => {
+  app.post('/api/fund/card', requireAuth, actionLimiter, asyncHandler(async (req, res) => {
     const input = cardSchema.parse(req.body);
     const pan = input.pan.replace(/\s+/g, '');
 
@@ -135,9 +166,10 @@ export function createApp() {
   app.post('/api/connect/exchange', requireAuth, asyncHandler(async (req, res) => {
     const { public_token } = z.object({ public_token: z.string() }).parse(req.body);
     const result = await bank.exchangeToken(public_token);
-    const acct = result.accounts[0];
-    upsertBankLink(req.userId!, result.access_token, acct?.mask ?? null, acct?.type ?? null);
-    res.json({ account: acct ? { mask: acct.mask, type: acct.type, balance: acct.balance } : null });
+    const acct = result.accounts?.[0];
+    if (!acct) return res.status(400).json({ error: 'No eligible account was found to link. Pick a checking or savings account.' });
+    upsertBankLink(req.userId!, result.access_token, acct.mask ?? null, acct.type ?? null);
+    res.json({ account: { mask: acct.mask, type: acct.type, balance: acct.balance } });
   }));
 
   app.get('/api/connect/status', requireAuth, asyncHandler(async (req, res) => {
@@ -145,27 +177,27 @@ export function createApp() {
     if (!link) return res.json({ linked: false });
     let balance: string | undefined;
     try {
-      const r: any = await bank.connectAccounts(link.access_token);
+      const r = await bank.connectAccounts(link.access_token);
       balance = r?.accounts?.[0]?.available ?? r?.accounts?.[0]?.balance;
     } catch { /* token may be stale; still report linked */ }
     res.json({ linked: true, account: { mask: link.account_mask, type: link.account_type, balance } });
   }));
 
   // ── Fund via Connect (ACH pull) ─────────────────────────────────────────────
-  app.post('/api/fund/connect', requireAuth, asyncHandler(async (req, res) => {
+  app.post('/api/fund/connect', requireAuth, actionLimiter, asyncHandler(async (req, res) => {
     const { amountCents } = z.object({ amountCents: z.number().int().min(100) }).parse(req.body);
     const link = getBankLink(req.userId!);
     if (!link) return res.status(400).json({ error: 'No linked bank account. Connect one first.' });
 
-    const transfer: any = await bank.connectTransfer(link.access_token, {
-      amountCents, direction: 'debit', idempotencyKey: randomBytes(8).toString('hex'),
+    const transfer = await bank.connectTransfer(link.access_token, {
+      amountCents, direction: 'debit', idempotencyKey: idemKey('fund-connect', req.userId!, amountCents),
     });
     const balanceCents = adjustWallet(req.userId!, amountCents, 'deposit_connect', `connect:${transfer.id}`);
     res.json({ balanceCents });
   }));
 
   // ── Cash out back to the bank ────────────────────────────────────────────────
-  app.post('/api/cashout', requireAuth, asyncHandler(async (req, res) => {
+  app.post('/api/cashout', requireAuth, actionLimiter, asyncHandler(async (req, res) => {
     const { amountCents, method } = z.object({
       amountCents: z.number().int().min(100),
       method: z.enum(['connect', 'card']),
@@ -177,7 +209,7 @@ export function createApp() {
       if (method === 'connect') {
         const link = getBankLink(req.userId!);
         if (!link) throw new BadRequest('No linked bank account to cash out to.');
-        await bank.connectTransfer(link.access_token, { amountCents, direction: 'credit', idempotencyKey: randomBytes(8).toString('hex') });
+        await bank.connectTransfer(link.access_token, { amountCents, direction: 'credit', idempotencyKey: idemKey('cashout-connect', req.userId!, amountCents) });
       } else {
         const charge = getLatestCardCharge(req.userId!);
         if (!charge) throw new BadRequest('No card on file to refund to.');
@@ -192,7 +224,7 @@ export function createApp() {
   }));
 
   // ── Play ──────────────────────────────────────────────────────────────────────
-  app.post('/api/play', requireAuth, asyncHandler(async (req, res) => {
+  app.post('/api/play', requireAuth, actionLimiter, asyncHandler(async (req, res) => {
     const { game, stakeCents, pick } = z.object({
       game: z.enum(['coinflip', 'dice']),
       stakeCents: z.number().int().min(100),

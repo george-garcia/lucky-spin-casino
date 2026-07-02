@@ -22,15 +22,12 @@ export function AuthPage({ onAuthed }: { onAuthed: (u: User) => void }) {
     }
   }
 
-  // One-click sign-in as the pre-seeded recruiter demo player.
+  // One-click passwordless sign-in as the pre-seeded recruiter demo player (no baked password).
   async function signInAsDemo() {
     setBusy(true);
     setError('');
     try {
-      const r = await api.login({
-        email: 'recruiter@demo.com',
-        password: (import.meta as any).env?.VITE_DEMO_PASSWORD || '',
-      });
+      const r = await api.demoLogin();
       onAuthed(r.user);
     } catch (err) {
       setError((err as Error).message);

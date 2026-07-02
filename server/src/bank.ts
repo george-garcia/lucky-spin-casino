@@ -39,6 +39,14 @@ export interface AuthorizeResult {
   id: string; approved: boolean; last4?: string; authCode?: string; declineReason?: string; amount?: string;
 }
 
+export interface BankTransfer {
+  id: string; direction: 'debit' | 'credit'; amount: string; status: string; created_at?: string;
+}
+
+export interface BankLinkedAccount {
+  id: number; type: string; mask: string; balance: string; available: string;
+}
+
 export const bank = {
   authorizeCard(input: {
     number: string; expMonth: string; expYear: string; cvv: string; amountCents: number;
@@ -79,11 +87,11 @@ export const bank = {
   },
 
   // ── Connect — balances & transfers use the user's access token ───────────────
-  connectAccounts(accessToken: string) {
+  connectAccounts(accessToken: string): Promise<{ accounts: BankLinkedAccount[] }> {
     return bankFetch('/connect/accounts', { authToken: accessToken });
   },
 
-  connectTransfer(accessToken: string, input: { amountCents: number; direction: 'debit' | 'credit'; idempotencyKey?: string; description?: string }) {
+  connectTransfer(accessToken: string, input: { amountCents: number; direction: 'debit' | 'credit'; idempotencyKey?: string; description?: string }): Promise<BankTransfer> {
     return bankFetch('/connect/transfers', {
       method: 'POST',
       authToken: accessToken,

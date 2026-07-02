@@ -22,6 +22,7 @@ export interface Bet { id: number; game: string; stake_cents: number; pick: stri
 export const api = {
   register: (b: { email: string; password: string; displayName?: string }) => req<{ user: User }>('/auth/register', { method: 'POST', body: b }),
   login: (b: { email: string; password: string }) => req<{ user: User }>('/auth/login', { method: 'POST', body: b }),
+  demoLogin: () => req<{ user: User }>('/auth/demo-login', { method: 'POST' }),
   logout: () => req('/auth/logout', { method: 'POST' }),
   me: () => req<{ user: User; wallet: { balanceCents: number } }>('/me'),
   wallet: () => req<{ balanceCents: number; ledger: LedgerEntry[] }>('/wallet'),

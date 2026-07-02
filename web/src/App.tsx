@@ -12,6 +12,12 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
   const [modal, setModal] = useState<null | 'fund' | 'cashout'>(null);
+  const [showHint, setShowHint] = useState(() => !localStorage.getItem('ls_onboarded'));
+
+  function dismissHint() {
+    localStorage.setItem('ls_onboarded', '1');
+    setShowHint(false);
+  }
 
   useEffect(() => {
     api.me()
@@ -57,6 +63,17 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      {showHint && (
+        <div className="max-w-5xl mx-auto px-5 pt-4">
+          <div className="panel px-4 py-3 flex items-center justify-between gap-3">
+            <p className="text-sm text-white/70">
+              <span className="text-gold font-medium">New here?</span> Add funds with the demo card or by linking a bank account, place a bet, then cash out. Every result is provably fair — you can verify it yourself.
+            </p>
+            <button onClick={dismissHint} className="text-white/40 hover:text-white text-xl leading-none shrink-0" aria-label="Dismiss">×</button>
+          </div>
+        </div>
+      )}
 
       <main className="max-w-5xl mx-auto px-5 py-8 grid grid-cols-1 lg:grid-cols-5 gap-6">
         <div className="lg:col-span-3">
